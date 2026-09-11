@@ -30,7 +30,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build image
+      - name: Patch hardcoded vars and build image
+        shell: powershell
         env:
           SRC_ISO: ${{ github.event.inputs.iso_url }}
           DVM_USERNAME: ${{ github.event.inputs.username }}
@@ -40,6 +41,22 @@ jobs:
           QEMU_IMG_INSTALL: "1"
           EMS_SAC_SOURCE: "skip"
         run: |
+          # windows_build.ps1 hardcodes $env:SRC_ISO etc., overwriting whatever we pass.
+          # Patch those lines with our actual values before running.
+          $iso = $env:SRC_ISO
+          $usr = $env:DVM_USERNAME
+          $pwd = $env:DVM_PASSWORD
+          $key = $env:SSH_PUBKEY
+          $c = Get-Content windows_build.ps1 -Raw
+          $c = $c -replace '(?m)^\$env:SRC_ISO\s*=.*$', "`$env:SRC_ISO = '$iso'"
+          $c = $c -replace '(?m)^\$env:DVM_USERNAME\s*=.*$', "`$env:DVM_USERNAME = '$usr'"
+          $c = $c -replace '(?m)^\$env:DVM_PASSWORD\s*=.*$', "`$env:DVM_PASSWORD = '$pwd'"
+          if ($key) {
+            $c = $c -replace '(?m)^\$env:SSH_PUBKEY\s*=.*$', "`$env:SSH_PUBKEY = '$key'"
+          }
+          Set-Content windows_build.ps1 -Value $c -NoNewline
+          Write-Host "=== Patched windows_build.ps1 ===" -ForegroundColor Green
+          Select-String -Path windows_build.ps1 -Pattern '^\$env:(SRC_ISO|DVM_USERNAME|DVM_PASSWORD|SSH_PUBKEY)' | ForEach-Object { $_.Line }
           powershell -ExecutionPolicy Bypass -File windows_build.ps1
 
       - name: Show output
