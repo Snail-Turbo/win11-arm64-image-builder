@@ -1,0 +1,123 @@
+name: Build Win11 ARM64 for DroidVM
+
+on:
+  workflow_dispatch:
+    inputs:
+      iso_url:
+        description: "Win11 ARM64 ISO 直链 URL（必填，http/https）"
+        required: true
+      username:
+        description: "Windows 用户名"
+        required: false
+        default: "USER"
+      password:
+        description: "Windows 密码"
+        required: false
+        default: "DroidVM"
+      ssh_pubkey:
+        description: "SSH 公钥（可选，留空则仅密码登录）"
+        required: false
+        default: ""
+      compress:
+        description: "qcow2 zstd 压缩（1=开，体积约4.7G；0=关，约10G）"
+        required: false
+        default: "1"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        env:
+          SRC_ISO: ${{ github.event.inputs.iso_url }}
+          DVM_USERNAME: ${{ github.event.inputs.username }}
+          DVM_PASSWORD: ${{ github.event.inputs.password }}
+          SSH_PUBKEY: ${{ github.event.inputs.ssh_pubkey }}
+          COMPRESS: ${{ github.event.inputs.compress }}
+          QEMU_IMG_INSTALL: "1"
+          EMS_SAC_SOURCE: "skip"
+        run: |
+          powershell -ExecutionPolicy Bypass -File windows_build.ps1
+
+      - name: Show output
+        shell: bash
+        run: |
+          ls -lh win11-droidvm-final.* 2>/dev/null || echo "no output found"
+
+      - name: Split qcow2 into 1.8GB parts
+        shell: bash
+        run: |
+          split -b 1800M win11-droidvm-final.qcow2 win11.part-
+          ls -lh win11.part-*
+
+      - name: Upload part aa
+        if: hashFiles('win11.part-aa') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: win11-part-aa
+          path: win11.part-aa
+          retention-days: 7
+
+      - name: Upload part ab
+        if: hashFiles('win11.part-ab') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: win11-part-ab
+          path: win11.part-ab
+          retention-days: 7
+
+      - name: Upload part ac
+        if: hashFiles('win11.part-ac') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: win11-part-ac
+          path: win11.part-ac
+          retention-days: 7
+
+      - name: Upload part ad
+        if: hashFiles('win11.part-ad') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: win11-part-ad
+          path: win11.part-ad
+          retention-days: 7
+
+      - name: Upload vmpkg (if under 2GB)
+        if: hashFiles('win11-droidvm-final.vmpkg') != ''
+        shell: bash
+        run: |
+          SIZE=$(stat -c%s win11-droidvm-final.vmpkg 2>/dev/null || echo 0)
+          echo "vmpkg size: $SIZE bytes"
+          if [ "$SIZE" -lt 2000000000 ]; then
+            echo "vmpkg under 2GB, will upload as single artifact"
+          else
+            echo "vmpkg over 2GB, splitting..."
+            split -b 1800M win11-droidvm-final.vmpkg win11-vmpkg.part-
+          fi
+
+      - name: Upload vmpkg part aa
+        if: hashFiles('win11-vmpkg.part-aa') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: win11-vmpkg-part-aa
+          path: win11-vmpkg.part-aa
+          retention-days: 7
+
+      - name: Upload vmpkg part ab
+        if: hashFiles('win11-vmpkg.part-ab') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: win11-vmpkg-part-ab
+          path: win11-vmpkg.part-ab
+          retention-days: 7
+
+      - name: Upload vmpkg part ac
+        if: hashFiles('win11-vmpkg.part-ac') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: win11-vmpkg-part-ac
+          path: win11-vmpkg.part-ac
+          retention-days: 7
