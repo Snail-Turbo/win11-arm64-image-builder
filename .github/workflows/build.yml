@@ -30,6 +30,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Write ISO URL for cache key
+        shell: bash
+        run: echo "${{ github.event.inputs.iso_url }}" > iso_url.txt
+
+      - name: Cache downloaded ISO
+        uses: actions/cache@v4
+        with:
+          path: windows/files/win11-arm64.iso
+          key: win11-arm64-iso-${{ hashFiles('iso_url.txt') }}
+
       - name: Patch hardcoded vars and build image
         shell: powershell
         env:
