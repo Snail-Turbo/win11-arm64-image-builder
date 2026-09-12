@@ -60,6 +60,7 @@ jobs:
           DVM_PASSWORD: ${{ github.event.inputs.password }}
           SSH_PUBKEY: ${{ github.event.inputs.ssh_pubkey }}
           COMPRESS: ${{ github.event.inputs.compress }}
+          IMAGE_INDEX: "3"
           QEMU_IMG_INSTALL: "1"
           EMS_SAC_SOURCE: "skip"
         run: |
