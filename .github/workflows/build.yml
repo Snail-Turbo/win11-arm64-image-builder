@@ -1,5 +1,13 @@
 name: Build Win11 ARM64 for DroidVM
 
+# 原则：完全遵照官方 windows_build.ps1 的默认行为，只保留三类必要偏离——
+#   1. CI 基建（官方是本地跑脚本，本来没有这些）：ISO 获取、产物上传
+#   2. CI 硬性要求：IMAGE_INDEX 必须显式指定（官方脚本在无交互终端时拒绝猜测版本）
+#   3. 用户定制：用户名 / 密码 / 可选 SSH 公钥 / 磁盘大小 —— 通过 patch 脚本顶部硬编码行注入
+# 其余一切（驱动、debloat、EMS/SAC、qemu 版本、VMPKG_COMPRESSION 等）全部走官方默认。
+#
+# 内存 6144 / vCPU 6 / 屏幕 1680x1050 的定制在仓库的 vms.json 里（pack-vmpkg 自动读取），与本文件无关。
+
 on:
   workflow_dispatch:
     inputs:
@@ -8,15 +16,23 @@ on:
         required: false
         default: "yiyang-dev"
       password:
-        description: "Windows 密码"
+        description: "Windows 密码（不能含单引号）"
         required: false
         default: "yiyang2143"
       ssh_pubkey:
-        description: "SSH 公钥（可选，留空则仅密码登录）"
+        description: "SSH 公钥（可选；留空则镜像不注入免密公钥）"
         required: false
         default: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB+m+i6MPDyP93SU4ZPz96RAxoaCMpEm1z6BWq4IU59j ubuntu-to-pad-winvm"
+      disk_size_mb:
+        description: "系统盘大小 MB（官方脚本默认 40960=40GB）"
+        required: false
+        default: "65536"
+      image_index:
+        description: "install.wim 版本索引（3=Win11 Pro；CI 无交互终端必须指定）"
+        required: false
+        default: "3"
       compress:
-        description: "qcow2 zstd 压缩（1=开，体积约4.7G；0=关，约10G）"
+        description: "qcow2 zstd 压缩簇，官方脚本可选项（1=开 约6.7G；0=关 约14G）"
         required: false
         default: "1"
 
@@ -28,6 +44,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # --- CI 基建：获取官方 SRC_ISO 指定的安装 ISO ----------------------------
+      # Release 附件单文件上限 2GB，所以官方 ISO 以 5 个分卷发布；有缓存则免下载。
       - name: Cache merged ISO
         id: iso-cache
         uses: actions/cache@v4
@@ -46,121 +64,60 @@ jobs:
             echo "=== Downloading part-$p ==="
             curl -fL --retry 3 --retry-delay 3 -o "win11.iso.part-$p" "$BASE/win11.iso.part-$p"
           done
-          echo "=== Merging parts ==="
           cat win11.iso.part-aa win11.iso.part-ab win11.iso.part-ac win11.iso.part-ad win11.iso.part-ae > windows/files/win11-arm64.iso
           rm -f win11.iso.part-*
-          echo "=== Merged ISO ==="
           ls -lh windows/files/win11-arm64.iso
 
+      # --- 用户定制：patch 官方脚本顶部的硬编码行 ------------------------------
+      # windows_build.ps1 顶部 $env:XXX = "..." 会无条件覆盖外部环境变量，
+      # 所以要改的变量只能直接改写文件；没 patch 的变量 = 官方默认原样生效。
+      # IMAGE_INDEX / COMPRESS 不在此列：官方脚本不覆盖它们（前者被注释、后者在
+      # windows/build.ps1 里读取），作为环境变量传入即生效。
       - name: Patch hardcoded vars and build image
         shell: powershell
         env:
-          SRC_ISO: "windows/files/win11-arm64.iso"
-          DVM_USERNAME: ${{ github.event.inputs.username }}
-          DVM_PASSWORD: ${{ github.event.inputs.password }}
-          SSH_PUBKEY: ${{ github.event.inputs.ssh_pubkey }}
-          COMPRESS: ${{ github.event.inputs.compress }}
-          IMAGE_INDEX: "3"
-          DISK_SIZE_MB: "65536"
-          QEMU_IMG_INSTALL: "1"
-          EMS_SAC_SOURCE: "skip"
+          IMAGE_INDEX: ${{ inputs.image_index }}
+          COMPRESS: ${{ inputs.compress }}
         run: |
-          # windows_build.ps1 hardcodes $env:SRC_ISO etc., overwriting whatever we pass.
-          # Patch those lines with our actual values before running.
-          $iso = $env:SRC_ISO
-          $usr = $env:DVM_USERNAME
-          $pwd = $env:DVM_PASSWORD
-          $key = $env:SSH_PUBKEY
+          $iso  = "windows/files/win11-arm64.iso"
+          $usr  = "${{ inputs.username }}"
+          $pwd  = "${{ inputs.password }}"
+          $key  = "${{ inputs.ssh_pubkey }}"
+          $disk = "${{ inputs.disk_size_mb }}"
           $c = Get-Content windows_build.ps1 -Raw
           $c = $c -replace '(?m)^\$env:SRC_ISO\s*=.*$', "`$env:SRC_ISO = '$iso'"
           $c = $c -replace '(?m)^\$env:DVM_USERNAME\s*=.*$', "`$env:DVM_USERNAME = '$usr'"
           $c = $c -replace '(?m)^\$env:DVM_PASSWORD\s*=.*$', "`$env:DVM_PASSWORD = '$pwd'"
+          $c = $c -replace '(?m)^\$env:DISK_SIZE_MB\s*=.*$', "`$env:DISK_SIZE_MB = '$disk' # 64GB"
           if ($key) {
             $c = $c -replace '(?m)^\$env:SSH_PUBKEY\s*=.*$', "`$env:SSH_PUBKEY = '$key'"
           }
           Set-Content windows_build.ps1 -Value $c -NoNewline
           Write-Host "=== Patched windows_build.ps1 ===" -ForegroundColor Green
-          Select-String -Path windows_build.ps1 -Pattern '^\$env:(SRC_ISO|DVM_USERNAME|DVM_PASSWORD|SSH_PUBKEY)' | ForEach-Object { $_.Line }
-          Write-Host "=== Verify ISO exists ===" -ForegroundColor Green
+          Select-String -Path windows_build.ps1 -Pattern '^\$env:(SRC_ISO|DVM_USERNAME|DVM_PASSWORD|SSH_PUBKEY|DISK_SIZE_MB)' | ForEach-Object { $_.Line }
           Get-Item windows/files/win11-arm64.iso | Select-Object FullName, Length
           powershell -ExecutionPolicy Bypass -File windows_build.ps1
 
-      - name: Show output
+      - name: Show artifacts
         shell: bash
-        run: |
-          ls -lh win11-droidvm-final.* 2>/dev/null || echo "no output found"
+        run: ls -lh win11-droidvm-final.*
 
-      - name: Split qcow2 into 1.8GB parts
-        shell: bash
-        run: |
-          split -b 1800M win11-droidvm-final.qcow2 win11.part-
-          ls -lh win11.part-*
-
-      - name: Upload part aa
-        if: hashFiles('win11.part-aa') != ''
+      # --- 产物上传：整文件直传 ------------------------------------------------
+      # upload-artifact v4 无单文件大小上限，无需分片（旧版分片上传漏传过一片，
+      # 导致合并后的 vmpkg 尾部缺失、App 导入报 "short read"）。
+      # 两者都是已压缩/不可压内容，compression-level: 0 按 README 建议加速上传。
+      - name: Upload qcow2
         uses: actions/upload-artifact@v4
         with:
-          name: win11-part-aa
-          path: win11.part-aa
+          name: win11-droidvm-final-qcow2
+          path: win11-droidvm-final.qcow2
+          compression-level: 0
           retention-days: 7
 
-      - name: Upload part ab
-        if: hashFiles('win11.part-ab') != ''
+      - name: Upload vmpkg
         uses: actions/upload-artifact@v4
         with:
-          name: win11-part-ab
-          path: win11.part-ab
-          retention-days: 7
-
-      - name: Upload part ac
-        if: hashFiles('win11.part-ac') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: win11-part-ac
-          path: win11.part-ac
-          retention-days: 7
-
-      - name: Upload part ad
-        if: hashFiles('win11.part-ad') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: win11-part-ad
-          path: win11.part-ad
-          retention-days: 7
-
-      - name: Upload vmpkg (if under 2GB)
-        if: hashFiles('win11-droidvm-final.vmpkg') != ''
-        shell: bash
-        run: |
-          SIZE=$(stat -c%s win11-droidvm-final.vmpkg 2>/dev/null || echo 0)
-          echo "vmpkg size: $SIZE bytes"
-          if [ "$SIZE" -lt 2000000000 ]; then
-            echo "vmpkg under 2GB, will upload as single artifact"
-          else
-            echo "vmpkg over 2GB, splitting..."
-            split -b 1800M win11-droidvm-final.vmpkg win11-vmpkg.part-
-          fi
-
-      - name: Upload vmpkg part aa
-        if: hashFiles('win11-vmpkg.part-aa') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: win11-vmpkg-part-aa
-          path: win11-vmpkg.part-aa
-          retention-days: 7
-
-      - name: Upload vmpkg part ab
-        if: hashFiles('win11-vmpkg.part-ab') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: win11-vmpkg-part-ab
-          path: win11-vmpkg.part-ab
-          retention-days: 7
-
-      - name: Upload vmpkg part ac
-        if: hashFiles('win11-vmpkg.part-ac') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: win11-vmpkg-part-ac
-          path: win11-vmpkg.part-ac
+          name: win11-droidvm-final-vmpkg
+          path: win11-droidvm-final.vmpkg
+          compression-level: 0
           retention-days: 7
