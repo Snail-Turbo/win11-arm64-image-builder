@@ -14,7 +14,7 @@ on:
       ssh_pubkey:
         description: "SSH 公钥（可选，留空则仅密码登录）"
         required: false
-        default: ""
+        default: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB+m+i6MPDyP93SU4ZPz96RAxoaCMpEm1z6BWq4IU59j ubuntu-to-pad-winvm"
       compress:
         description: "qcow2 zstd 压缩（1=开，体积约4.7G；0=关，约10G）"
         required: false
