@@ -3,9 +3,6 @@ name: Build Win11 ARM64 for DroidVM
 on:
   workflow_dispatch:
     inputs:
-      iso_url:
-        description: "Win11 ARM64 ISO 直链 URL（必填，http/https）"
-        required: true
       username:
         description: "Windows 用户名"
         required: false
@@ -31,20 +28,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Write ISO URL for cache key
-        shell: bash
-        run: echo "${{ github.event.inputs.iso_url }}" > iso_url.txt
-
-      - name: Cache downloaded ISO
+      - name: Cache merged ISO
+        id: iso-cache
         uses: actions/cache@v4
         with:
           path: windows/files/win11-arm64.iso
-          key: win11-arm64-iso-${{ hashFiles('iso_url.txt') }}
+          key: win11-arm64-iso-25h2-zhcn
+
+      - name: Download ISO parts from Release and merge
+        if: steps.iso-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -e
+          mkdir -p windows/files
+          BASE="https://github.com/Snail-Turbo/win11-arm64-image-builder/releases/download/iso-cache"
+          for p in aa ab ac ad ae; do
+            echo "=== Downloading part-$p ==="
+            curl -fL --retry 3 --retry-delay 3 -o "win11.iso.part-$p" "$BASE/win11.iso.part-$p"
+          done
+          echo "=== Merging parts ==="
+          cat win11.iso.part-aa win11.iso.part-ab win11.iso.part-ac win11.iso.part-ad win11.iso.part-ae > windows/files/win11-arm64.iso
+          rm -f win11.iso.part-*
+          echo "=== Merged ISO ==="
+          ls -lh windows/files/win11-arm64.iso
 
       - name: Patch hardcoded vars and build image
         shell: powershell
         env:
-          SRC_ISO: ${{ github.event.inputs.iso_url }}
+          SRC_ISO: "windows/files/win11-arm64.iso"
           DVM_USERNAME: ${{ github.event.inputs.username }}
           DVM_PASSWORD: ${{ github.event.inputs.password }}
           SSH_PUBKEY: ${{ github.event.inputs.ssh_pubkey }}
@@ -68,6 +79,8 @@ jobs:
           Set-Content windows_build.ps1 -Value $c -NoNewline
           Write-Host "=== Patched windows_build.ps1 ===" -ForegroundColor Green
           Select-String -Path windows_build.ps1 -Pattern '^\$env:(SRC_ISO|DVM_USERNAME|DVM_PASSWORD|SSH_PUBKEY)' | ForEach-Object { $_.Line }
+          Write-Host "=== Verify ISO exists ===" -ForegroundColor Green
+          Get-Item windows/files/win11-arm64.iso | Select-Object FullName, Length
           powershell -ExecutionPolicy Bypass -File windows_build.ps1
 
       - name: Show output
